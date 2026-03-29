@@ -2,10 +2,10 @@
 
 import subprocess
 import sys
-import numpy as np
-from typing import Optional
 
-from cube_model import CubeState, parse_moves, rotation_matrix_90, get_wide_layers
+import numpy as np
+
+from cube_model import CubeState, get_wide_layers, parse_moves
 from renderer import CubeRenderer
 
 
@@ -26,6 +26,8 @@ def render_cube_video(
     move_duration: float = 0.4,
     pause_before: float = 0.5,
     pause_after: float = 0.5,
+    scramble_str: str | None = None,
+    label: str = "",
 ):
     """Render a Rubik's cube move sequence to an MP4 video.
 
@@ -38,26 +40,45 @@ def render_cube_video(
         move_duration: Duration of each move animation in seconds.
         pause_before: Pause before the first move (seconds).
         pause_after: Pause after the last move (seconds).
+        scramble_str: Optional scramble to apply before animating (not animated).
+        label: Label for progress output (e.g., "[3/10]").
     """
     moves = parse_moves(moves_str)
     cube = CubeState()
+
+    # Apply pre-scramble instantly (no animation)
+    if scramble_str:
+        for _, axis, layer, clockwise, reps in parse_moves(scramble_str):
+            for _ in range(reps):
+                cube.apply_move(axis, layer, clockwise)
     renderer = CubeRenderer(width, height)
 
     # Start ffmpeg process
     ffmpeg_cmd = [
         "ffmpeg",
         "-y",  # Overwrite output
-        "-f", "rawvideo",
-        "-vcodec", "rawvideo",
-        "-s", f"{width}x{height}",
-        "-pix_fmt", "rgb24",
-        "-r", str(fps),
-        "-i", "-",  # Read from stdin
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "18",
-        "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
+        "-f",
+        "rawvideo",
+        "-vcodec",
+        "rawvideo",
+        "-s",
+        f"{width}x{height}",
+        "-pix_fmt",
+        "rgb24",
+        "-r",
+        str(fps),
+        "-i",
+        "-",  # Read from stdin
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "18",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
         output_path,
     ]
 
@@ -81,7 +102,8 @@ def render_cube_video(
         ffmpeg_proc.stdin.write(frame_bytes)
         frame_count += 1
         pct = frame_count * 100 // total_frames
-        print(f"\rRendering: {frame_count}/{total_frames} frames ({pct}%)", end="", flush=True)
+        msg = f"\r{label}Rendering: {frame_count}/{total_frames} frames ({pct}%)"
+        print(msg, end="", flush=True)
 
     # Initial pause
     if frames_pause_before > 0:
@@ -91,10 +113,16 @@ def render_cube_video(
 
     # Animate each move
     for move_name, axis, layer, clockwise, reps in moves:
-        for rep in range(reps):
+        for _rep in range(reps):
             _animate_single_move(
-                cube, renderer, axis, layer, clockwise,
-                frames_per_move, write_frame, move_name,
+                cube,
+                renderer,
+                axis,
+                layer,
+                clockwise,
+                frames_per_move,
+                write_frame,
+                move_name,
             )
 
     # Final pause
@@ -111,7 +139,7 @@ def render_cube_video(
         print(f"\nffmpeg error: {stderr.decode()}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\nDone! {frame_count} frames written to {output_path}")
+    print(f"\n{label}Done! {frame_count} frames -> {output_path}")
     renderer.release()
 
 
@@ -119,7 +147,7 @@ def _animate_single_move(
     cube: CubeState,
     renderer: CubeRenderer,
     axis: np.ndarray,
-    layer: Optional[int],
+    layer: int | None,
     clockwise: bool,
     num_frames: int,
     write_frame,
@@ -132,11 +160,11 @@ def _animate_single_move(
 
     # Check for wide moves
     base = move_name[0]
-    if 'w' in move_name:
+    if "w" in move_name:
         layers_to_move = get_wide_layers(base)
 
-    for l in layers_to_move:
-        cubies = cube.get_affected_cubies(axis, l)
+    for lyr in layers_to_move:
+        cubies = cube.get_affected_cubies(axis, lyr)
         for c in cubies:
             idx = cube.cubies.index(c)
             if idx not in affected_indices:
@@ -161,5 +189,5 @@ def _animate_single_move(
         write_frame(frame_bytes)
 
     # Commit the move to cube state
-    for l in layers_to_move:
-        cube.apply_move(axis, l, clockwise)
+    for lyr in layers_to_move:
+        cube.apply_move(axis, lyr, clockwise)

@@ -10,7 +10,6 @@ Face colors are tracked per-sticker via a (position, face_normal) -> color mappi
 """
 
 import numpy as np
-from typing import Optional
 
 # Standard Rubik's cube colors mapped to face normals
 # Right=Red, Left=Orange, Up=White, Down=Yellow, Front=Green, Back=Blue
@@ -27,18 +26,18 @@ BLACK = np.array([0.05, 0.05, 0.05])
 
 # Axis definitions for each move
 MOVE_AXIS = {
-    "R": (np.array([1.0, 0, 0]), +1),   # x-axis, layer x=+1
-    "L": (np.array([1.0, 0, 0]), -1),   # x-axis, layer x=-1
-    "U": (np.array([0, 1.0, 0]), +1),   # y-axis, layer y=+1
-    "D": (np.array([0, 1.0, 0]), -1),   # y-axis, layer y=-1
-    "F": (np.array([0, 0, 1.0]), +1),   # z-axis, layer z=+1
-    "B": (np.array([0, 0, 1.0]), -1),   # z-axis, layer z=-1
-    "M": (np.array([1.0, 0, 0]), 0),    # middle x
-    "E": (np.array([0, 1.0, 0]), 0),    # middle y
-    "S": (np.array([0, 0, 1.0]), 0),    # middle z
-    "x": (np.array([1.0, 0, 0]), None), # whole cube x
-    "y": (np.array([0, 1.0, 0]), None), # whole cube y
-    "z": (np.array([0, 0, 1.0]), None), # whole cube z
+    "R": (np.array([1.0, 0, 0]), +1),  # x-axis, layer x=+1
+    "L": (np.array([1.0, 0, 0]), -1),  # x-axis, layer x=-1
+    "U": (np.array([0, 1.0, 0]), +1),  # y-axis, layer y=+1
+    "D": (np.array([0, 1.0, 0]), -1),  # y-axis, layer y=-1
+    "F": (np.array([0, 0, 1.0]), +1),  # z-axis, layer z=+1
+    "B": (np.array([0, 0, 1.0]), -1),  # z-axis, layer z=-1
+    "M": (np.array([1.0, 0, 0]), 0),  # middle x
+    "E": (np.array([0, 1.0, 0]), 0),  # middle y
+    "S": (np.array([0, 0, 1.0]), 0),  # middle z
+    "x": (np.array([1.0, 0, 0]), None),  # whole cube x
+    "y": (np.array([0, 1.0, 0]), None),  # whole cube y
+    "z": (np.array([0, 0, 1.0]), None),  # whole cube z
 }
 
 
@@ -48,12 +47,7 @@ def rotation_matrix_90(axis: np.ndarray, clockwise: bool = True) -> np.ndarray:
     Clockwise when looking from the positive end of the axis toward the origin.
     """
     ax = tuple(axis.astype(int))
-    # For a 90-degree CW rotation looking from +axis:
-    # We rotate by -90 degrees (CW) or +90 degrees (CCW)
-    if clockwise:
-        angle = -np.pi / 2
-    else:
-        angle = np.pi / 2
+    angle = -np.pi / 2 if clockwise else np.pi / 2
 
     c, s = round(np.cos(angle)), round(np.sin(angle))
 
@@ -104,21 +98,21 @@ class CubeState:
                         continue
                     self.cubies.append(Cubie((x, y, z)))
 
-    def get_affected_cubies(self, axis: np.ndarray, layer: Optional[int]) -> list[Cubie]:
+    def get_affected_cubies(self, axis: np.ndarray, layer: int | None) -> list[Cubie]:
         """Get cubies in a specific layer (or all for whole-cube rotations)."""
         if layer is None:
             return list(self.cubies)
         axis_idx = int(np.argmax(np.abs(axis)))
         return [c for c in self.cubies if round(c.position[axis_idx]) == layer]
 
-    def apply_move(self, axis: np.ndarray, layer: Optional[int], clockwise: bool = True):
+    def apply_move(self, axis: np.ndarray, layer: int | None, clockwise: bool = True):
         """Apply a 90-degree rotation to the specified layer."""
         rot = rotation_matrix_90(axis, clockwise)
         for cubie in self.get_affected_cubies(axis, layer):
             cubie.rotate(rot)
 
 
-def parse_moves(notation: str) -> list[tuple[str, np.ndarray, Optional[int], bool, int]]:
+def parse_moves(notation: str) -> list[tuple[str, np.ndarray, int | None, bool, int]]:
     """Parse standard Rubik's cube notation into a list of moves.
 
     Returns list of (name, axis, layer, clockwise, repetitions).
@@ -144,8 +138,8 @@ def tokenize_moves(notation: str) -> list[str]:
             token = s[i]
             i += 1
             # Check for 'w' (wide move)
-            if i < len(s) and s[i] == 'w':
-                token += 'w'
+            if i < len(s) and s[i] == "w":
+                token += "w"
                 i += 1
             # Check for modifiers
             if i < len(s) and s[i] == "'":
@@ -171,14 +165,14 @@ def tokenize_moves(notation: str) -> list[str]:
     return tokens
 
 
-def interpret_token(token: str) -> tuple[str, np.ndarray, Optional[int], bool, int]:
+def interpret_token(token: str) -> tuple[str, np.ndarray, int | None, bool, int]:
     """Interpret a single move token.
 
     Returns (display_name, axis, layer, clockwise, repetitions).
     For wide moves, returns a list but we handle them as composite moves in the animator.
     """
     base = token[0]
-    is_wide = 'w' in token
+    is_wide = "w" in token
     is_prime = "'" in token
     is_double = "2" in token
 
@@ -202,7 +196,7 @@ def interpret_token(token: str) -> tuple[str, np.ndarray, Optional[int], bool, i
     return (token, axis_vec, layer, clockwise, reps)
 
 
-def get_wide_layers(base: str) -> list[Optional[int]]:
+def get_wide_layers(base: str) -> list[int | None]:
     """For wide moves, return the two layers to rotate."""
     _, layer = MOVE_AXIS[base]
     if layer is None:

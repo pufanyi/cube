@@ -8,7 +8,7 @@ import moderngl
 import numpy as np
 from pyrr import Matrix44, Vector3
 
-from cube_model import CubeState, BLACK, FACE_COLORS
+from cube_model import BLACK, CubeState
 
 
 def mat44_from_axis_angle(axis: np.ndarray, angle: float) -> Matrix44:
@@ -19,13 +19,17 @@ def mat44_from_axis_angle(axis: np.ndarray, angle: float) -> Matrix44:
     t = 1.0 - c
     x, y, z = ax
 
-    m = np.array([
-        [t*x*x + c,   t*x*y - s*z, t*x*z + s*y, 0],
-        [t*x*y + s*z, t*y*y + c,   t*y*z - s*x, 0],
-        [t*x*z - s*y, t*y*z + s*x, t*z*z + c,   0],
-        [0,           0,           0,           1],
-    ], dtype='f4')
+    m = np.array(
+        [
+            [t * x * x + c, t * x * y - s * z, t * x * z + s * y, 0],
+            [t * x * y + s * z, t * y * y + c, t * y * z - s * x, 0],
+            [t * x * z - s * y, t * y * z + s * x, t * z * z + c, 0],
+            [0, 0, 0, 1],
+        ],
+        dtype="f4",
+    )
     return Matrix44(m)
+
 
 # Vertex shader: transforms vertices and passes normals/colors to fragment shader
 VERTEX_SHADER = """
@@ -88,34 +92,23 @@ void main() {
 # Face definitions for a unit cube: (normal, 4 corner vertices)
 CUBE_FACES = [
     # Right (+x)
-    ((1, 0, 0), [
-        (0.5, -0.5, -0.5), (0.5, 0.5, -0.5), (0.5, 0.5, 0.5), (0.5, -0.5, 0.5)
-    ]),
+    ((1, 0, 0), [(0.5, -0.5, -0.5), (0.5, 0.5, -0.5), (0.5, 0.5, 0.5), (0.5, -0.5, 0.5)]),
     # Left (-x)
-    ((-1, 0, 0), [
-        (-0.5, -0.5, 0.5), (-0.5, 0.5, 0.5), (-0.5, 0.5, -0.5), (-0.5, -0.5, -0.5)
-    ]),
+    ((-1, 0, 0), [(-0.5, -0.5, 0.5), (-0.5, 0.5, 0.5), (-0.5, 0.5, -0.5), (-0.5, -0.5, -0.5)]),
     # Up (+y)
-    ((0, 1, 0), [
-        (-0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (0.5, 0.5, -0.5), (-0.5, 0.5, -0.5)
-    ]),
+    ((0, 1, 0), [(-0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (0.5, 0.5, -0.5), (-0.5, 0.5, -0.5)]),
     # Down (-y)
-    ((0, -1, 0), [
-        (-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (0.5, -0.5, 0.5), (-0.5, -0.5, 0.5)
-    ]),
+    ((0, -1, 0), [(-0.5, -0.5, -0.5), (0.5, -0.5, -0.5), (0.5, -0.5, 0.5), (-0.5, -0.5, 0.5)]),
     # Front (+z)
-    ((0, 0, 1), [
-        (-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, 0.5, 0.5)
-    ]),
+    ((0, 0, 1), [(-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, 0.5, 0.5)]),
     # Back (-z)
-    ((0, 0, -1), [
-        (0.5, -0.5, -0.5), (-0.5, -0.5, -0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5)
-    ]),
+    ((0, 0, -1), [(0.5, -0.5, -0.5), (-0.5, -0.5, -0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5)]),
 ]
 
 
-def build_cubie_vertices(cubie_pos: np.ndarray, sticker_colors: dict,
-                         cubie_scale: float = 0.88) -> tuple[np.ndarray, np.ndarray]:
+def build_cubie_vertices(
+    cubie_pos: np.ndarray, sticker_colors: dict, cubie_scale: float = 0.88
+) -> tuple[np.ndarray, np.ndarray]:
     """Build vertex data for a single cubie.
 
     Returns (vertices, indices) where each vertex has (pos, normal, color).
@@ -140,37 +133,52 @@ def build_cubie_vertices(cubie_pos: np.ndarray, sticker_colors: dict,
         for v in face_verts:
             pos = np.array(v) * body_scale + cubie_pos
             vertices.append((*pos, *normal, *BLACK))
-        indices.extend([
-            idx_offset, idx_offset + 1, idx_offset + 2,
-            idx_offset, idx_offset + 2, idx_offset + 3,
-        ])
+        indices.extend(
+            [
+                idx_offset,
+                idx_offset + 1,
+                idx_offset + 2,
+                idx_offset,
+                idx_offset + 2,
+                idx_offset + 3,
+            ]
+        )
         idx_offset += 4
 
         # Sticker face (colored, raised above body)
-        color = sticker_colors.get(normal_tuple, None)
+        color = sticker_colors.get(normal_tuple)
         if color is not None:
             for v in face_verts:
                 vv = np.array(v)
                 # Scale tangential components (perpendicular to normal) inward
                 tangential_scale = body_scale - sticker_inset
                 # Normal component stays at body_scale + raise
-                pos = (vv * (abs_normal * body_scale + (1 - abs_normal) * tangential_scale)
-                       + cubie_pos + normal * sticker_raise)
+                pos = (
+                    vv * (abs_normal * body_scale + (1 - abs_normal) * tangential_scale)
+                    + cubie_pos
+                    + normal * sticker_raise
+                )
                 vertices.append((*pos, *normal, *color))
-            indices.extend([
-                idx_offset, idx_offset + 1, idx_offset + 2,
-                idx_offset, idx_offset + 2, idx_offset + 3,
-            ])
+            indices.extend(
+                [
+                    idx_offset,
+                    idx_offset + 1,
+                    idx_offset + 2,
+                    idx_offset,
+                    idx_offset + 2,
+                    idx_offset + 3,
+                ]
+            )
             idx_offset += 4
 
-    return np.array(vertices, dtype='f4'), np.array(indices, dtype='i4')
+    return np.array(vertices, dtype="f4"), np.array(indices, dtype="i4")
 
 
 class CubeRenderer:
     def __init__(self, width: int = 1920, height: int = 1080):
         self.width = width
         self.height = height
-        self.ctx = moderngl.create_standalone_context(backend='egl')
+        self.ctx = moderngl.create_standalone_context(backend="egl")
         self.ctx.enable(moderngl.DEPTH_TEST)
         self.ctx.enable(moderngl.CULL_FACE)
 
@@ -202,16 +210,19 @@ class CubeRenderer:
         # Light direction (from upper-right-front)
         light_dir = np.array([1.0, 1.5, 1.0])
         light_dir = light_dir / np.linalg.norm(light_dir)
-        self.prog['light_dir'].value = tuple(light_dir)
-        self.prog['camera_pos'].value = tuple(self.camera_pos)
+        self.prog["light_dir"].value = tuple(light_dir)
+        self.prog["camera_pos"].value = tuple(self.camera_pos)
 
         # Preallocate read buffer
         self._buf = bytearray(width * height * 3)
 
-    def render_frame(self, cube: CubeState,
-                     rotating_cubies: list = None,
-                     rotation_axis: np.ndarray = None,
-                     rotation_angle: float = 0.0) -> bytes:
+    def render_frame(
+        self,
+        cube: CubeState,
+        rotating_cubies: list | None = None,
+        rotation_axis: np.ndarray | None = None,
+        rotation_angle: float = 0.0,
+    ) -> bytes:
         """Render one frame of the cube state.
 
         Args:
@@ -254,9 +265,7 @@ class CubeRenderer:
         # Render static cubies (identity model matrix)
         if all_vertices:
             self._render_batch(
-                np.concatenate(all_vertices),
-                np.concatenate(all_indices),
-                Matrix44.identity()
+                np.concatenate(all_vertices), np.concatenate(all_indices), Matrix44.identity()
             )
 
         # Render animated cubies with rotation
@@ -278,19 +287,19 @@ class CubeRenderer:
     def _render_batch(self, vertices: np.ndarray, indices: np.ndarray, model: Matrix44):
         """Render a batch of geometry with a given model matrix."""
         mvp = self.vp * model
-        self.prog['mvp'].write(mvp.astype('f4').tobytes())
-        self.prog['model'].write(model.astype('f4').tobytes())
+        self.prog["mvp"].write(mvp.astype("f4").tobytes())
+        self.prog["model"].write(model.astype("f4").tobytes())
 
         # Normal matrix = transpose(inverse(upper-left 3x3 of model))
-        m3 = np.array(model, dtype='f4')[:3, :3]
+        m3 = np.array(model, dtype="f4")[:3, :3]
         normal_mat = np.linalg.inv(m3).T
-        self.prog['normal_matrix'].write(normal_mat.astype('f4').tobytes())
+        self.prog["normal_matrix"].write(normal_mat.astype("f4").tobytes())
 
         vbo = self.ctx.buffer(vertices.tobytes())
         ibo = self.ctx.buffer(indices.tobytes())
         vao = self.ctx.vertex_array(
             self.prog,
-            [(vbo, '3f 3f 3f', 'in_position', 'in_normal', 'in_color')],
+            [(vbo, "3f 3f 3f", "in_position", "in_normal", "in_color")],
             index_buffer=ibo,
         )
         vao.render(moderngl.TRIANGLES)

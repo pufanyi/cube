@@ -11,11 +11,8 @@ from renderer import CubeRenderer
 
 # --- Text overlay configuration ---
 _FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"
-_FONT_PATH_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 _COLOR_NORMAL = (180, 180, 180)
-_COLOR_CURRENT = (255, 220, 50)
 _COLOR_DONE = (100, 100, 100)
-_COLOR_STEP = (220, 220, 220)
 
 
 def _add_move_overlay(
@@ -39,15 +36,12 @@ def _add_move_overlay(
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    # Scale font sizes relative to video height
+    # Scale font size relative to video height
     seq_font_size = max(20, height // 22)
-    step_font_size = max(16, height // 28)
     try:
         seq_font = ImageFont.truetype(_FONT_PATH, seq_font_size)
-        step_font = ImageFont.truetype(_FONT_PATH_REGULAR, step_font_size)
     except OSError:
         seq_font = ImageFont.load_default()
-        step_font = ImageFont.load_default()
 
     margin = width // 30
     padding = 12
@@ -60,18 +54,8 @@ def _add_move_overlay(
         if i < len(move_tokens) - 1:
             total_seq_w += space_w
 
-    total = len(move_tokens)
-    if current_move_idx < 0:
-        step_text = f"Step 0 / {total}"
-    elif current_move_idx >= total:
-        step_text = f"Step {total} / {total}  ✓"
-    else:
-        step_num = current_move_idx + 1 if animating else current_move_idx
-        step_text = f"Step {step_num} / {total}"
-
-    step_w = draw.textlength(step_text, font=step_font)
-    box_w = max(total_seq_w, step_w) + padding * 2
-    box_h = seq_font_size + step_font_size + padding * 2 + 8
+    box_w = total_seq_w + padding * 2
+    box_h = seq_font_size + padding * 2
 
     # --- Draw semi-transparent background ---
     y_top = margin
@@ -84,22 +68,27 @@ def _add_move_overlay(
     # --- Draw move sequence ---
     y_seq = y_top + padding
     x = margin + padding
+    highlight_pad = 4
     for i, token in enumerate(move_tokens):
+        tw = draw.textlength(token, font=seq_font)
         if i < current_move_idx:
             color = (*_COLOR_DONE, 255)
         elif i == current_move_idx and animating:
-            color = (*_COLOR_CURRENT, 255)
+            # Draw highlight background behind current move
+            draw.rounded_rectangle(
+                [x - highlight_pad, y_seq - highlight_pad,
+                 x + tw + highlight_pad, y_seq + seq_font_size + highlight_pad],
+                radius=6,
+                fill=(255, 180, 0, 180),
+            )
+            color = (255, 255, 255, 255)
         elif i == current_move_idx and not animating:
             color = (*_COLOR_DONE, 255)
         else:
             color = (*_COLOR_NORMAL, 255)
         draw.text((x, y_seq), token, fill=color, font=seq_font)
-        tw = draw.textlength(token, font=seq_font)
         x += tw + space_w
 
-    # --- Draw step indicator ---
-    y_step = y_seq + seq_font_size + 8
-    draw.text((margin + padding, y_step), step_text, fill=(*_COLOR_STEP, 255), font=step_font)
 
     # Composite overlay onto frame
     img = img.convert("RGBA")

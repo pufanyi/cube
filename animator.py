@@ -4,9 +4,107 @@ import subprocess
 import sys
 
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
-from cube_model import CubeState, get_wide_layers, parse_moves
+from cube_model import CubeState, get_wide_layers, parse_moves, tokenize_moves
 from renderer import CubeRenderer
+
+# --- Text overlay configuration ---
+_FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"
+_FONT_PATH_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+_COLOR_NORMAL = (180, 180, 180)
+_COLOR_CURRENT = (255, 220, 50)
+_COLOR_DONE = (100, 100, 100)
+_COLOR_STEP = (220, 220, 220)
+
+
+def _add_move_overlay(
+    frame_bytes: bytes,
+    width: int,
+    height: int,
+    move_tokens: list[str],
+    current_move_idx: int,
+    animating: bool,
+) -> bytes:
+    """Draw the move sequence and step indicator onto a frame.
+
+    Args:
+        frame_bytes: Raw RGB24 bytes.
+        width, height: Frame dimensions.
+        move_tokens: List of move notation strings (e.g. ["R", "U", "R'", "U'"]).
+        current_move_idx: Index of the move currently being animated (-1 for pauses).
+        animating: True if a move is actively animating (highlights current move).
+    """
+    img = Image.frombytes("RGB", (width, height), frame_bytes)
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    # Scale font sizes relative to video height
+    seq_font_size = max(20, height // 22)
+    step_font_size = max(16, height // 28)
+    try:
+        seq_font = ImageFont.truetype(_FONT_PATH, seq_font_size)
+        step_font = ImageFont.truetype(_FONT_PATH_REGULAR, step_font_size)
+    except OSError:
+        seq_font = ImageFont.load_default()
+        step_font = ImageFont.load_default()
+
+    margin = width // 30
+    padding = 12
+
+    # --- Measure text for background ---
+    space_w = draw.textlength(" ", font=seq_font)
+    total_seq_w = 0.0
+    for i, token in enumerate(move_tokens):
+        total_seq_w += draw.textlength(token, font=seq_font)
+        if i < len(move_tokens) - 1:
+            total_seq_w += space_w
+
+    total = len(move_tokens)
+    if current_move_idx < 0:
+        step_text = f"Step 0 / {total}"
+    elif current_move_idx >= total:
+        step_text = f"Step {total} / {total}  ✓"
+    else:
+        step_num = current_move_idx + 1 if animating else current_move_idx
+        step_text = f"Step {step_num} / {total}"
+
+    step_w = draw.textlength(step_text, font=step_font)
+    box_w = max(total_seq_w, step_w) + padding * 2
+    box_h = seq_font_size + step_font_size + padding * 2 + 8
+
+    # --- Draw semi-transparent background ---
+    y_top = margin
+    draw.rounded_rectangle(
+        [margin, y_top, margin + box_w, y_top + box_h],
+        radius=10,
+        fill=(0, 0, 0, 160),
+    )
+
+    # --- Draw move sequence ---
+    y_seq = y_top + padding
+    x = margin + padding
+    for i, token in enumerate(move_tokens):
+        if i < current_move_idx:
+            color = (*_COLOR_DONE, 255)
+        elif i == current_move_idx and animating:
+            color = (*_COLOR_CURRENT, 255)
+        elif i == current_move_idx and not animating:
+            color = (*_COLOR_DONE, 255)
+        else:
+            color = (*_COLOR_NORMAL, 255)
+        draw.text((x, y_seq), token, fill=color, font=seq_font)
+        tw = draw.textlength(token, font=seq_font)
+        x += tw + space_w
+
+    # --- Draw step indicator ---
+    y_step = y_seq + seq_font_size + 8
+    draw.text((margin + padding, y_step), step_text, fill=(*_COLOR_STEP, 255), font=step_font)
+
+    # Composite overlay onto frame
+    img = img.convert("RGBA")
+    img = Image.alpha_composite(img, overlay)
+    return img.convert("RGB").tobytes()
 
 
 def ease_in_out_cubic(t: float) -> float:
@@ -44,6 +142,7 @@ def render_cube_video(
         label: Label for progress output (e.g., "[3/10]").
     """
     moves = parse_moves(moves_str)
+    move_tokens = tokenize_moves(moves_str)
     cube = CubeState()
 
     # Apply pre-scramble instantly (no animation)
@@ -96,23 +195,35 @@ def render_cube_video(
     total_frames = frames_pause_before + total_move_frames + frames_pause_after
 
     frame_count = 0
+    # Overlay state: current_move_idx tracks which token we're on
+    overlay_state = {"move_idx": -1, "animating": False}
 
     def write_frame(frame_bytes: bytes):
         nonlocal frame_count
-        ffmpeg_proc.stdin.write(frame_bytes)
+        frame_with_overlay = _add_move_overlay(
+            frame_bytes,
+            width,
+            height,
+            move_tokens,
+            overlay_state["move_idx"],
+            overlay_state["animating"],
+        )
+        ffmpeg_proc.stdin.write(frame_with_overlay)
         frame_count += 1
         pct = frame_count * 100 // total_frames
         msg = f"\r{label}Rendering: {frame_count}/{total_frames} frames ({pct}%)"
         print(msg, end="", flush=True)
 
-    # Initial pause
+    # Initial pause — show sequence before any move
     if frames_pause_before > 0:
         static_frame = renderer.render_frame(cube)
         for _ in range(frames_pause_before):
             write_frame(static_frame)
 
-    # Animate each move
-    for move_name, axis, layer, clockwise, reps in moves:
+    # Animate each move, tracking token index
+    for token_idx, (move_name, axis, layer, clockwise, reps) in enumerate(moves):
+        overlay_state["move_idx"] = token_idx
+        overlay_state["animating"] = True
         for _rep in range(reps):
             _animate_single_move(
                 cube,
@@ -125,7 +236,9 @@ def render_cube_video(
                 move_name,
             )
 
-    # Final pause
+    # Final pause — all moves done
+    overlay_state["move_idx"] = len(move_tokens)
+    overlay_state["animating"] = False
     if frames_pause_after > 0:
         static_frame = renderer.render_frame(cube)
         for _ in range(frames_pause_after):

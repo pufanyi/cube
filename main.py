@@ -226,8 +226,8 @@ def _add_common_args(parser):
     parser.add_argument(
         "--speed",
         type=float,
-        default=0.4,
-        help="Seconds per move (default: 0.4)",
+        default=0.5,
+        help="Seconds per move (default: 0.5)",
     )
     parser.add_argument(
         "--pause-before",

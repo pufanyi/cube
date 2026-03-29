@@ -1,7 +1,8 @@
 """ModernGL offscreen renderer for Rubik's Cube.
 
 Renders 26 cubies with colored stickers, black body, and Phong lighting.
-Each cubie is a slightly smaller cube (gap between cubies) with colored face quads.
+Hidden faces (back, left, bottom) are shown as flat "mirror" stickers
+positioned behind the cube in 3D space, similar to alg.cubing.net.
 """
 
 import moderngl
@@ -28,10 +29,11 @@ def mat44_from_axis_angle(axis: np.ndarray, angle: float) -> Matrix44:
         ],
         dtype="f4",
     )
-    return Matrix44(m)
+    # Transpose: pyrr sends row-major bytes, but GLSL reads column-major,
+    # so the GPU sees M^T. Transposing here cancels that out.
+    return Matrix44(m.T)
 
 
-# Vertex shader: transforms vertices and passes normals/colors to fragment shader
 VERTEX_SHADER = """
 #version 330
 
@@ -56,7 +58,6 @@ void main() {
 }
 """
 
-# Fragment shader: Phong lighting
 FRAGMENT_SHADER = """
 #version 330
 
@@ -73,13 +74,9 @@ void main() {
     vec3 normal = normalize(v_normal);
     vec3 light = normalize(light_dir);
 
-    // Ambient
     float ambient = 0.3;
-
-    // Diffuse
     float diff = max(dot(normal, light), 0.0);
 
-    // Specular
     vec3 view_dir = normalize(camera_pos - v_position);
     vec3 reflect_dir = reflect(-light, normal);
     float spec = pow(max(dot(view_dir, reflect_dir), 0.0), 32.0) * 0.3;
@@ -105,54 +102,48 @@ CUBE_FACES = [
     ((0, 0, -1), [(0.5, -0.5, -0.5), (-0.5, -0.5, -0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5)]),
 ]
 
+# Quad templates for mirror stickers. Each maps a face normal direction
+# to 4 corner offsets (CCW winding facing the camera at +x,+y,+z).
+# s = half-size of sticker
+_MIRROR_QUAD_TEMPLATES = {
+    # Back face mirror: quads in XY plane, facing +z
+    (0, 0, -1): lambda s: [(-s, -s, 0), (+s, -s, 0), (+s, +s, 0), (-s, +s, 0)],
+    # Left face mirror: quads in YZ plane, facing +x
+    (-1, 0, 0): lambda s: [(0, -s, +s), (0, -s, -s), (0, +s, -s), (0, +s, +s)],
+    # Bottom face mirror: quads in XZ plane, facing +y
+    (0, -1, 0): lambda s: [(-s, 0, +s), (+s, 0, +s), (+s, 0, -s), (-s, 0, -s)],
+}
+
 
 def build_cubie_vertices(
     cubie_pos: np.ndarray, sticker_colors: dict, cubie_scale: float = 0.88
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build vertex data for a single cubie.
-
-    Returns (vertices, indices) where each vertex has (pos, normal, color).
-    The cubie body is dark, with colored sticker quads on outer faces.
-
-    Stickers are inset tangentially (smaller) and raised slightly along the normal
-    so they sit ON TOP of the body face, not behind it.
-    """
+    """Build vertex data for a single cubie."""
     vertices = []
     indices = []
     idx_offset = 0
 
     body_scale = cubie_scale
-    sticker_inset = 0.08  # How much smaller the sticker is (tangential)
-    sticker_raise = 0.003  # How far the sticker pokes out above the body
+    sticker_inset = 0.08
+    sticker_raise = 0.003
 
     for normal_tuple, face_verts in CUBE_FACES:
         normal = np.array(normal_tuple, dtype=float)
         abs_normal = np.abs(normal)
 
-        # Body face (dark)
         for v in face_verts:
             pos = np.array(v) * body_scale + cubie_pos
             vertices.append((*pos, *normal, *BLACK))
         indices.extend(
-            [
-                idx_offset,
-                idx_offset + 1,
-                idx_offset + 2,
-                idx_offset,
-                idx_offset + 2,
-                idx_offset + 3,
-            ]
+            [idx_offset, idx_offset + 1, idx_offset + 2, idx_offset, idx_offset + 2, idx_offset + 3]
         )
         idx_offset += 4
 
-        # Sticker face (colored, raised above body)
         color = sticker_colors.get(normal_tuple)
         if color is not None:
             for v in face_verts:
                 vv = np.array(v)
-                # Scale tangential components (perpendicular to normal) inward
                 tangential_scale = body_scale - sticker_inset
-                # Normal component stays at body_scale + raise
                 pos = (
                     vv * (abs_normal * body_scale + (1 - abs_normal) * tangential_scale)
                     + cubie_pos
@@ -174,6 +165,55 @@ def build_cubie_vertices(
     return np.array(vertices, dtype="f4"), np.array(indices, dtype="i4")
 
 
+def build_mirror_stickers(
+    cube: CubeState, mirror_gap: float = 4.5, sticker_half: float = 0.38, dim: float = 0.7
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build flat colored quads behind the cube showing the 3 hidden faces.
+
+    Positions mirror stickers in 3D space offset from each hidden face,
+    like reflections on walls/floor behind the cube (alg.cubing.net style).
+    """
+    vertices = []
+    indices = []
+    idx = 0
+
+    # Each entry: (face_normal, axis_index, mirror_coord)
+    # face_normal: which cube face to mirror
+    # axis_index: which axis the face is on (0=x, 1=y, 2=z)
+    # mirror_coord: the fixed coordinate for the mirror plane
+    hidden_faces = [
+        ((0, 0, -1), 2, -(1.5 + mirror_gap)),  # Back face → z = -3.3
+        ((-1, 0, 0), 0, -(1.5 + mirror_gap)),  # Left face → x = -3.3
+        ((0, -1, 0), 1, -(1.5 + mirror_gap)),  # Bottom face → y = -3.3
+    ]
+
+    for face_normal, axis_idx, mirror_coord in hidden_faces:
+        quad_offsets = _MIRROR_QUAD_TEMPLATES[face_normal](sticker_half)
+        # The outward normal for the mirror (faces toward camera)
+        mirror_normal = [0.0, 0.0, 0.0]
+        mirror_normal[axis_idx] = 1.0 if mirror_coord < 0 else -1.0
+
+        for cubie in cube.cubies:
+            color = cubie.stickers.get(face_normal)
+            if color is None:
+                continue
+
+            # Sticker center = cubie position but with the face-axis replaced by mirror_coord
+            center = cubie.position.copy()
+            center[axis_idx] = mirror_coord
+
+            dimmed = color * dim
+            for dx, dy, dz in quad_offsets:
+                pos = center + np.array([dx, dy, dz])
+                vertices.append((*pos, *mirror_normal, *dimmed))
+            indices.extend([idx, idx + 1, idx + 2, idx, idx + 2, idx + 3])
+            idx += 4
+
+    if not vertices:
+        return np.zeros((0, 9), dtype="f4"), np.zeros(0, dtype="i4")
+    return np.array(vertices, dtype="f4"), np.array(indices, dtype="i4")
+
+
 class CubeRenderer:
     def __init__(self, width: int = 1920, height: int = 1080):
         self.width = width
@@ -192,29 +232,25 @@ class CubeRenderer:
             depth_attachment=self.ctx.depth_renderbuffer((width, height)),
         )
 
-        # Camera setup - looking at origin from a nice angle
-        self.camera_pos = Vector3([4.5, 3.5, 4.5])
-        self.view = Matrix44.look_at(
-            eye=self.camera_pos,
-            target=Vector3([0.0, 0.0, 0.0]),
-            up=Vector3([0.0, 1.0, 0.0]),
-        )
+        # Camera: pulled back to show cube + all mirror stickers without occlusion
+        self.camera_pos = Vector3([8.5, 6.5, 8.5])
         self.proj = Matrix44.perspective_projection(
-            fovy=40.0,
+            fovy=45.0,
             aspect=width / height,
             near=0.1,
             far=100.0,
         )
+        self.view = Matrix44.look_at(
+            eye=self.camera_pos,
+            target=Vector3([-1.2, -1.5, -1.2]),
+            up=Vector3([0.0, 1.0, 0.0]),
+        )
         self.vp = self.proj * self.view
 
-        # Light direction (from upper-right-front)
         light_dir = np.array([1.0, 1.5, 1.0])
         light_dir = light_dir / np.linalg.norm(light_dir)
         self.prog["light_dir"].value = tuple(light_dir)
         self.prog["camera_pos"].value = tuple(self.camera_pos)
-
-        # Preallocate read buffer
-        self._buf = bytearray(width * height * 3)
 
     def render_frame(
         self,
@@ -222,64 +258,56 @@ class CubeRenderer:
         rotating_cubies: list | None = None,
         rotation_axis: np.ndarray | None = None,
         rotation_angle: float = 0.0,
+        mirrors: bool = True,
     ) -> bytes:
-        """Render one frame of the cube state.
-
-        Args:
-            cube: The current cube state.
-            rotating_cubies: List of cubie indices currently being animated.
-            rotation_axis: Axis of rotation for the animated cubies.
-            rotation_angle: Current angle of rotation in radians.
-
-        Returns:
-            Raw RGB bytes (width * height * 3).
-        """
+        """Render one frame of the cube state with optional mirror stickers."""
         self.fbo.use()
         self.ctx.clear(0.12, 0.12, 0.14, 1.0)
 
         rotating_set = set(rotating_cubies) if rotating_cubies else set()
-
-        all_vertices = []
-        all_indices = []
-        static_offset = 0
-        animated_vertices = []
-        animated_indices = []
-        animated_offset = 0
+        static_verts, static_idxs = [], []
+        anim_verts, anim_idxs = [], []
+        s_off, a_off = 0, 0
 
         for i, cubie in enumerate(cube.cubies):
-            sticker_colors = {}
-            for normal, color in cubie.stickers.items():
-                sticker_colors[normal] = color
-
+            sticker_colors = {n: c for n, c in cubie.stickers.items()}
             verts, idxs = build_cubie_vertices(cubie.position, sticker_colors)
-
             if i in rotating_set and rotation_axis is not None:
-                animated_vertices.append(verts)
-                animated_indices.append(idxs + animated_offset)
-                animated_offset += len(verts)
+                anim_verts.append(verts)
+                anim_idxs.append(idxs + a_off)
+                a_off += len(verts)
             else:
-                all_vertices.append(verts)
-                all_indices.append(idxs + static_offset)
-                static_offset += len(verts)
+                static_verts.append(verts)
+                static_idxs.append(idxs + s_off)
+                s_off += len(verts)
 
-        # Render static cubies (identity model matrix)
-        if all_vertices:
+        # Add mirror stickers to static geometry
+        if mirrors:
+            mv, mi = build_mirror_stickers(cube)
+            if len(mv) > 0:
+                static_verts.append(mv)
+                static_idxs.append(mi + s_off)
+                s_off += len(mv)
+
+        # Render static
+        if static_verts:
             self._render_batch(
-                np.concatenate(all_vertices), np.concatenate(all_indices), Matrix44.identity()
+                np.concatenate(static_verts),
+                np.concatenate(static_idxs),
+                Matrix44.identity(),
             )
 
-        # Render animated cubies with rotation
-        if animated_vertices:
+        # Render animated
+        if anim_verts and rotation_axis is not None:
             rot_mat = mat44_from_axis_angle(rotation_axis, rotation_angle)
             self._render_batch(
-                np.concatenate(animated_vertices),
-                np.concatenate(animated_indices),
+                np.concatenate(anim_verts),
+                np.concatenate(anim_idxs),
                 rot_mat,
             )
 
         # Read pixels
         raw = self.fbo.color_attachments[0].read()
-        # Flip vertically (OpenGL origin is bottom-left)
         frame = np.frombuffer(raw, dtype=np.uint8).reshape(self.height, self.width, 4)
         frame = frame[::-1, :, :3].copy()
         return frame.tobytes()
@@ -290,7 +318,6 @@ class CubeRenderer:
         self.prog["mvp"].write(mvp.astype("f4").tobytes())
         self.prog["model"].write(model.astype("f4").tobytes())
 
-        # Normal matrix = transpose(inverse(upper-left 3x3 of model))
         m3 = np.array(model, dtype="f4")[:3, :3]
         normal_mat = np.linalg.inv(m3).T
         self.prog["normal_matrix"].write(normal_mat.astype("f4").tobytes())

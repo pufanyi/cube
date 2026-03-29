@@ -23,7 +23,7 @@ def render_cube_video(
     width: int = 1920,
     height: int = 1080,
     fps: int = 60,
-    move_duration: float = 0.4,
+    move_duration: float = 0.5,
     pause_before: float = 0.5,
     pause_after: float = 0.5,
     scramble_str: str | None = None,
@@ -179,7 +179,6 @@ def _animate_single_move(
         t = (frame_i + 1) / num_frames
         eased_t = ease_in_out_cubic(t)
         angle = target_angle * eased_t
-
         frame_bytes = renderer.render_frame(
             cube,
             rotating_cubies=affected_indices,

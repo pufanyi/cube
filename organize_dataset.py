@@ -102,12 +102,14 @@ def extract_frame(task: dict) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Organize cube dataset: extract frames + create JSONs")
+    parser = argparse.ArgumentParser(
+        description="Organize cube dataset: extract frames + create JSONs",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Process only 10 per step")
-    parser.add_argument("-w", "--workers", type=int, default=8, help="Parallel workers (default: 8)")
-    parser.add_argument("-i", "--input-dir", default="dataset", help="Input video directory (default: dataset/)")
-    parser.add_argument("-o", "--output-dir", default="dataset", help="Output directory (default: dataset/)")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for prompt selection (default: 42)")
+    parser.add_argument("-w", "--workers", type=int, default=8, help="Parallel workers")
+    parser.add_argument("-i", "--input-dir", default="dataset", help="Input video directory")
+    parser.add_argument("-o", "--output-dir", default="dataset", help="Output directory")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for prompts")
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
@@ -126,7 +128,6 @@ def main():
         for num_steps in range(1, 5):
             step_name = f"{num_steps}_step"
             video_dir = os.path.join(args.input_dir, step_name)
-            image_dir = os.path.join(args.output_dir, f"{step_name}_frames")
 
             # Collect video files
             videos = sorted(f for f in os.listdir(video_dir) if f.endswith(".mp4"))

@@ -2,6 +2,7 @@
 demo/
 dataset/
 dataset_2/
+dataset_3/
 *.mp4
 
 # Byte-compiled / optimized / DLL files

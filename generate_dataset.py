@@ -2,6 +2,7 @@
 """Generate cube rotation dataset: render videos, extract first frames, create JSON metadata.
 
 Combines video generation and dataset organization into a single pipeline.
+Supports resuming: skips already-rendered videos and already-extracted frames.
 
 Usage:
     # Dry run: 10 per step count
@@ -91,6 +92,8 @@ PROMPTS = [
 
 def _render_one(task: dict) -> dict:
     """Worker: render one video, return task dict with metadata."""
+    if os.path.exists(task["output"]):
+        return task
     with contextlib.redirect_stdout(io.StringIO()):
         render_cube_video(
             moves_str=task["moves"],
@@ -106,8 +109,10 @@ def _render_one(task: dict) -> dict:
     return task
 
 
-def _extract_frame(task: dict) -> str:
-    """Extract the first frame from a video as JPG."""
+def _extract_frame(task: dict) -> dict:
+    """Extract the first frame from a video as JPG. Returns task with 'ok' status."""
+    if os.path.exists(task["image_path"]):
+        return {**task, "ok": True, "skipped": True}
     os.makedirs(os.path.dirname(task["image_path"]), exist_ok=True)
     cmd = [
         "ffmpeg", "-y",
@@ -117,8 +122,10 @@ def _extract_frame(task: dict) -> str:
         "-q:v", "2",
         task["image_path"],
     ]
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-    return task["image_path"]
+    result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if result.returncode != 0:
+        return {**task, "ok": False, "skipped": False}
+    return {**task, "ok": True, "skipped": False}
 
 
 def _make_progress() -> Progress:
@@ -176,6 +183,13 @@ def main():
     base_seed = args.seed if args.seed is not None else random.randint(0, 2**32)
     mode = "dry run" if args.dry_run else "full"
 
+    # Persist seed to file so it's never lost
+    os.makedirs(args.output_dir, exist_ok=True)
+    seed_path = os.path.join(args.output_dir, "seed.txt")
+    with open(seed_path, "w") as f:
+        f.write(str(base_seed))
+    print(f"base_seed: {base_seed} (saved to {seed_path})")
+
     # Generation config stored in metadata
     generation_config = {
         "base_seed": base_seed,
@@ -197,8 +211,8 @@ def main():
 
         rng_prompts = random.Random(base_seed + num_steps)
 
-        # ── Phase 1: Build render tasks ─────────────────────────────
-        render_tasks = []
+        # ── Phase 1: Build all tasks (deterministic from seed) ──────
+        all_tasks = []
         for i in range(n_per_step):
             seed = base_seed + num_steps * 1_000_000 + i
             rng = random.Random(seed)
@@ -206,7 +220,7 @@ def main():
             scramble = generate_scramble(args.scramble_moves, rng)
             moves = generate_scramble(num_steps, rng)
 
-            render_tasks.append({
+            all_tasks.append({
                 "idx": i,
                 "moves": moves,
                 "scramble": scramble,
@@ -221,37 +235,26 @@ def main():
                 "prompt_base": rng_prompts.choice(PROMPTS),
             })
 
-        # ── Phase 2: Render videos ──────────────────────────────────
-        progress = _make_progress()
-        with progress:
-            bar = progress.add_task(
-                f"[bold]{step_name} — Rendering ({mode}: {n_per_step})",
-                total=len(render_tasks),
-            )
-            completed = _run_parallel(_render_one, render_tasks, args.workers, progress, bar)
+        # ── Phase 2: Render videos (skip existing) ─────────────────
+        to_render = [t for t in all_tasks if not os.path.exists(t["output"])]
+        n_skip = len(all_tasks) - len(to_render)
+        if n_skip > 0:
+            print(f"  {step_name}: skipping {n_skip} already-rendered videos")
 
-        completed.sort(key=lambda t: t["idx"])
+        if to_render:
+            progress = _make_progress()
+            with progress:
+                bar = progress.add_task(
+                    f"[bold]{step_name} — Rendering ({mode}: {len(to_render)} remaining)",
+                    total=len(to_render),
+                )
+                _run_parallel(_render_one, to_render, args.workers, progress, bar)
+        else:
+            print(f"  {step_name}: all {len(all_tasks)} videos already rendered")
 
-        # ── Phase 3: Extract first frames ───────────────────────────
-        frame_tasks = []
-        for t in completed:
-            name = f"{t['idx']:05d}"
-            frame_tasks.append({
-                "video_path": t["output"],
-                "image_path": os.path.join(frames_dir, f"{name}.jpg"),
-            })
-
-        progress = _make_progress()
-        with progress:
-            bar = progress.add_task(
-                f"[bold]{step_name} — Extracting frames",
-                total=len(frame_tasks),
-            )
-            _run_parallel(_extract_frame, frame_tasks, args.workers, progress, bar)
-
-        # ── Phase 4: Write JSON ─────────────────────────────────────
+        # ── Phase 3: Write JSON (before frame extraction) ───────────
         entries = []
-        for t in completed:
+        for t in all_tasks:
             sample_id = f"{t['idx']:05d}"
             moves = t["moves"].strip()
             prompt = f"{t['prompt_base']} The moves are: {moves}"
@@ -275,6 +278,40 @@ def main():
             json.dump(entries, f, ensure_ascii=False, indent=4)
 
         print(f"  Saved {json_path} ({len(entries)} entries)")
+
+        # ── Phase 4: Extract first frames (skip existing, tolerate errors) ──
+        frame_tasks = []
+        for t in all_tasks:
+            name = f"{t['idx']:05d}"
+            frame_path = os.path.join(frames_dir, f"{name}.jpg")
+            if not os.path.exists(frame_path):
+                frame_tasks.append({
+                    "video_path": t["output"],
+                    "image_path": frame_path,
+                })
+
+        if frame_tasks:
+            n_existing = len(all_tasks) - len(frame_tasks)
+            if n_existing > 0:
+                print(f"  {step_name}: skipping {n_existing} already-extracted frames")
+
+            progress = _make_progress()
+            with progress:
+                bar = progress.add_task(
+                    f"[bold]{step_name} — Extracting frames ({len(frame_tasks)} remaining)",
+                    total=len(frame_tasks),
+                )
+                frame_results = _run_parallel(_extract_frame, frame_tasks, args.workers, progress, bar)
+
+            failed = [r for r in frame_results if not r["ok"]]
+            if failed:
+                print(f"  WARNING: {len(failed)} frames failed to extract (can retry with extract_missing_frames.py)")
+                for r in failed[:10]:
+                    print(f"    FAILED: {r['video_path']}")
+                if len(failed) > 10:
+                    print(f"    ... and {len(failed) - 10} more")
+        else:
+            print(f"  {step_name}: all frames already extracted")
 
     print(f"\nDone! Videos and metadata saved to {args.output_dir}/")
 
